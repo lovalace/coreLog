@@ -1,7 +1,7 @@
 *&---------------------------------------------------------------------*
 *& Class: ZCL_CORELOG
 *& Açıklama: Basit, minimal ABAP logger
-*& Versiyon: 2.0 (Basitleştirilmiş)
+*& Versiyon: 2.1 (TYPE ANY Support + Size Tracking)
 *&---------------------------------------------------------------------*
 
 CLASS zcl_corelog DEFINITION
@@ -31,27 +31,27 @@ CLASS zcl_corelog DEFINITION
     CLASS-METHODS debug
       IMPORTING
         iv_message TYPE string
-        iv_details TYPE string OPTIONAL.
+        iv_data    TYPE any OPTIONAL.
 
     CLASS-METHODS info
       IMPORTING
         iv_message TYPE string
-        iv_details TYPE string OPTIONAL.
+        iv_data    TYPE any OPTIONAL.
 
     CLASS-METHODS warning
       IMPORTING
         iv_message TYPE string
-        iv_details TYPE string OPTIONAL.
+        iv_data    TYPE any OPTIONAL.
 
     CLASS-METHODS error
       IMPORTING
         iv_message TYPE string
-        iv_details TYPE string OPTIONAL.
+        iv_data    TYPE any OPTIONAL.
 
     CLASS-METHODS fatal
       IMPORTING
         iv_message TYPE string
-        iv_details TYPE string OPTIONAL.
+        iv_data    TYPE any OPTIONAL.
 
     " Konfigürasyon
     CLASS-METHODS init
@@ -79,13 +79,25 @@ CLASS zcl_corelog DEFINITION
       IMPORTING
         iv_level   TYPE char10
         iv_message TYPE string
-        iv_details TYPE string OPTIONAL.
+        iv_data    TYPE any OPTIONAL.
 
     CLASS-METHODS write_to_db
       IMPORTING
         iv_level   TYPE char10
         iv_message TYPE string
-        iv_details TYPE string OPTIONAL.
+        iv_data    TYPE any OPTIONAL.
+
+    CLASS-METHODS serialize_data
+      IMPORTING
+        iv_data           TYPE any
+      RETURNING
+        VALUE(rv_json)    TYPE string.
+
+    CLASS-METHODS calculate_size_kb
+      IMPORTING
+        iv_data             TYPE string
+      RETURNING
+        VALUE(rv_size_kb)   TYPE dec10_2.
 
     CLASS-METHODS get_level_number
       IMPORTING
@@ -111,7 +123,7 @@ CLASS zcl_corelog IMPLEMENTATION.
     log_internal(
       iv_level   = c_level_debug
       iv_message = iv_message
-      iv_details = iv_details
+      iv_data    = iv_data
     ).
   ENDMETHOD.
 
@@ -119,7 +131,7 @@ CLASS zcl_corelog IMPLEMENTATION.
     log_internal(
       iv_level   = c_level_info
       iv_message = iv_message
-      iv_details = iv_details
+      iv_data    = iv_data
     ).
   ENDMETHOD.
 
@@ -127,7 +139,7 @@ CLASS zcl_corelog IMPLEMENTATION.
     log_internal(
       iv_level   = c_level_warning
       iv_message = iv_message
-      iv_details = iv_details
+      iv_data    = iv_data
     ).
   ENDMETHOD.
 
@@ -135,7 +147,7 @@ CLASS zcl_corelog IMPLEMENTATION.
     log_internal(
       iv_level   = c_level_error
       iv_message = iv_message
-      iv_details = iv_details
+      iv_data    = iv_data
     ).
   ENDMETHOD.
 
@@ -143,7 +155,7 @@ CLASS zcl_corelog IMPLEMENTATION.
     log_internal(
       iv_level   = c_level_fatal
       iv_message = iv_message
-      iv_details = iv_details
+      iv_data    = iv_data
     ).
   ENDMETHOD.
 
@@ -182,7 +194,7 @@ CLASS zcl_corelog IMPLEMENTATION.
     write_to_db(
       iv_level   = iv_level
       iv_message = iv_message
-      iv_details = iv_details
+      iv_data    = iv_data
     ).
   ENDMETHOD.
 
@@ -194,17 +206,24 @@ CLASS zcl_corelog IMPLEMENTATION.
         " Timestamp oluştur: YYYYMMDDHHMMSS
         DATA(lv_timestamp) = CONV dec15( |{ sy-datum }{ sy-uzeit }| ).
 
+        " Veriyi serialize et (TYPE ANY → JSON string)
+        DATA(lv_details) = serialize_data( iv_data ).
+
+        " Veri boyutunu hesapla (KB cinsinden)
+        DATA(lv_size_kb) = calculate_size_kb( lv_details ).
+
         INSERT INTO zcorelog_log VALUES @(
           VALUE #(
-            client    = sy-mandt
-            log_id    = lv_log_id
-            timestamp = lv_timestamp
-            log_level = iv_level
-            message   = iv_message
-            username  = sy-uname
-            program   = sy-cprog
-            tcode     = sy-tcode
-            details   = iv_details
+            client       = sy-mandt
+            log_id       = lv_log_id
+            timestamp    = lv_timestamp
+            log_level    = iv_level
+            message      = iv_message
+            username     = sy-uname
+            program      = sy-cprog
+            tcode        = sy-tcode
+            details      = lv_details
+            data_size_kb = lv_size_kb
           )
         ).
 
@@ -258,6 +277,81 @@ CLASS zcl_corelog IMPLEMENTATION.
         gv_log_level     = c_level_info.
         gv_log_level_num = c_level_num_info.
         gv_is_active     = abap_true.
+    ENDTRY.
+  ENDMETHOD.
+
+  METHOD serialize_data.
+    " TYPE ANY veriyi JSON string'e çevir
+    TRY.
+        " Boş veri kontrolü
+        IF iv_data IS INITIAL.
+          rv_json = ''.
+          RETURN.
+        ENDIF.
+
+        " RTTI ile tip tespiti
+        DATA(lo_type) = cl_abap_typedescr=>describe_by_data( iv_data ).
+
+        CASE lo_type->kind.
+          WHEN cl_abap_typedescr=>kind_struct.
+            " Structure → JSON serialize
+            /ui2/cl_json=>serialize(
+              EXPORTING
+                data        = iv_data
+                compress    = abap_false
+                pretty_name = /ui2/cl_json=>pretty_mode-low_case
+              RECEIVING
+                r_json      = rv_json
+            ).
+
+          WHEN cl_abap_typedescr=>kind_table.
+            " Table → JSON array serialize
+            /ui2/cl_json=>serialize(
+              EXPORTING
+                data        = iv_data
+                compress    = abap_false
+                pretty_name = /ui2/cl_json=>pretty_mode-low_case
+              RECEIVING
+                r_json      = rv_json
+            ).
+
+          WHEN cl_abap_typedescr=>kind_elem.
+            " Primitive type → direkt string'e çevir
+            DATA lv_string TYPE string.
+            lv_string = iv_data.
+            rv_json = lv_string.
+
+          WHEN OTHERS.
+            " String varsay
+            rv_json = iv_data.
+        ENDCASE.
+
+      CATCH cx_root INTO DATA(lx_error).
+        " Serialize hatası, boş string dön
+        rv_json = |Serialize error: { lx_error->get_text( ) }|.
+    ENDTRY.
+  ENDMETHOD.
+
+  METHOD calculate_size_kb.
+    " String boyutunu KB cinsinden hesapla
+    TRY.
+        DATA(lv_length) = strlen( iv_data ).
+
+        " UTF-8 encoding varsayımıyla byte hesapla
+        " ABAP string'ler genelde UTF-16 (2 byte/char)
+        DATA(lv_bytes) = lv_length * 2.
+
+        " Bytes → KB (1 KB = 1024 bytes)
+        rv_size_kb = lv_bytes / 1024.
+
+        " Çok küçük değerler için 0.01 minimum
+        IF rv_size_kb < '0.01' AND lv_bytes > 0.
+          rv_size_kb = '0.01'.
+        ENDIF.
+
+      CATCH cx_root.
+        " Hata durumunda 0
+        rv_size_kb = 0.
     ENDTRY.
   ENDMETHOD.
 

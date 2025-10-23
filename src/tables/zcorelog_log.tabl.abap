@@ -26,4 +26,6 @@ define table zcorelog_log {
   tcode         : sytcode;
   @EndUserText.label : 'Detaylar (JSON)'
   details       : string(0);
+  @EndUserText.label : 'Veri Boyutu (KB)'
+  data_size_kb  : dec10_2;
 }

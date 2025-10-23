@@ -1,0 +1,13 @@
+# ABAP specific
+*.tmp
+*.bak
+.tmp*
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# OS specific
+.DS_Store
+Thumbs.db

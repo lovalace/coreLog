@@ -1,204 +1,293 @@
-# CoreLog Projesi
+# CoreLog - Basit ABAP Logger
 
-Bu proje, **ABAP** ortamında merkezi loglama (logging) işlevini sağlamak amacıyla geliştirilmiş, **senkron/asenkron** ve **dependency injection** prensiplerine dayanan bir altyapı sunar. “**CoreLog**” adı altında; tablolar, sınıflar ve arayüzler bir araya gelerek esnek, konfigüre edilebilir ve modüler bir loglama çözümü oluşturur.
+**CoreLog**, ABAP ortamında kullanımı kolay, minimal bir merkezi loglama kütüphanesidir.
+
+## Tasarım Felsefesi
+
+- **Basitlik Öncelikli**: Gereksiz karmaşıklık yok
+- **Hızlı Başlangıç**: 5 dakikada kurulum ve kullanıma hazır
+- **Minimum Tablo**: Sadece 2 tablo, 1 sınıf
+- **Kolay Bakım**: Az kod = az hata
 
 ## İçindekiler
 - [Özellikler](#özellikler)
-- [Kurulum & Ön Gereksinimler](#kurulum--ön-gereksinimler)
-- [Proje Mimarisi](#proje-mimarisi)
-  - [Tablolar](#tablolar)
-  - [Arayüzler (Interfaces)](#arayüzler-interfaces)
-  - [Sınıflar](#sınıflar)
-- [Konfigürasyon](#konfigürasyon)
-  - [ZCORELOG_CONFIG](#zcorelog_config)
-  - [ZCORELOG_TARGET](#zcorelog_target)
-  - [ZCORELOG_MODULE](#zcorelog_module)
-  - [ZCORELOG_LOG](#zcorelog_log)
-  - [ZCORELOG_FORMAT (Opsiyonel)](#zcorelog_format-opsiyonel)
-- [Kullanım](#kullanım)
-  - [Basit Örnek](#basit-örnek)
-  - [Senkron / Asenkron](#senkron--asenkron)
-  - [Tablo Bazlı Özel Hedef](#tablo-bazlı-özel-hedef)
-  - [Modül Bazlı Log Seviyesi](#modül-bazlı-log-seviyesi)
-  - [Meta Data Ekleme](#meta-data-ekleme)
-- [Mermaid ile Sınıf Diyagramı](#mermaid-ile-sınıf-diyagramı)
-- [Katkıda Bulunma](#katkıda-bulunma)
-- [Lisans](#lisans)
+- [Hızlı Başlangıç](#hızlı-başlangıç)
+- [Mimari](#mimari)
+- [Kullanım Örnekleri](#kullanım-örnekleri)
+- [Gelişmiş Özellikler](#gelişmiş-özellikler)
 
 ---
 
 ## Özellikler
 
-- **Merkezi Yönetim**: Log seviyeleri, log hedefleri, asenkron/senkron mod ve benzeri ayarlar veritabanı tabloları (ZCORELOG_*) üzerinden yönetilir.  
-- **Çoklu Hedef**: DB, API, FILE, FTP vb. hedeflere yazma imkânı. Aynı anda birden fazla hedef desteklenebilir.  
-- **Senkron veya Asenkron**: Performans ihtiyacına göre anlık (INSERT) veya asenkron (buffer) loglamayı etkinleştirebilirsiniz.  
-- **Modül/Tablo Bazlı**: Belirli ABAP program modülleri veya veri tabloları için özel log seviyeleri ve hedefler tanımlanabilir.  
-- **Dependency Injection**: Varsayılan formatter ve target nesnelerini isteğe göre dışarıdan gönderip konfigüre edebilirsiniz.
+- 5 log seviyesi: DEBUG, INFO, WARNING, ERROR, FATAL
+- Veritabanına otomatik kayıt
+- Hata durumunda güvenli çalışma (silent fail)
+- Log seviyesi kontrolü (sadece önemli loglar kaydedilir)
+- Kullanıcı ve timestamp otomatik ekleme
 
 ---
 
-## Kurulum & Ön Gereksinimler
+## Hızlı Başlangıç
 
-1. **Sürüm**: Proje, ABAP 7.40+ (S/4HANA 1909 vb.) sürümleri için tasarlanmıştır.  
-2. **Erişim Yetkileri**: Yeni veritabanı tabloları oluşturmak, global sınıf ve arayüz tanımlamak için gerekli yetkilere sahip olmalısınız.  
-3. **Uygun paket/namespace**: İsteğe bağlı olarak kendi Z paketinizde veya bir yerel paket (TMP) içinde oluşturabilirsiniz.
+### 1. Tabloları Oluştur
 
-**Adım Adım:**
-1. **Tabloları Oluşturun**: ZCORELOG_CONFIG, ZCORELOG_TARGET, ZCORELOG_MODULE, ZCORELOG_LOG ve isteğe bağlı ZCORELOG_FORMAT tablolarını tanımlayın.  
-2. **Arayüz ve Sınıfları** (ZIF_CORELOG_*, ZCL_CORELOG_*) SE80 veya Eclipse ortamında yükleyin.  
-3. Gerekirse dummy verileri veya başlangıç kayıtlarını ekleyip test edin.
+**ZCORELOG_CONFIG** - Minimal konfigürasyon
+```abap
+@EndUserText.label : 'CoreLog Konfigürasyon'
+define table zcorelog_config {
+  key client      : abap.clnt;
+  key config_name : abap.char(30);
+  log_level       : abap.char(10);  // 'DEBUG', 'INFO', 'ERROR' vb.
+  is_active       : abap_boolean;
+}
+```
 
----
+**ZCORELOG_LOG** - Log kayıtları
+```abap
+@EndUserText.label : 'CoreLog Kayıtları'
+define table zcorelog_log {
+  key client    : abap.clnt;
+  key log_id    : abap.numc(16);
+  timestamp     : abap.dec(15,0);
+  log_level     : abap.char(10);
+  message       : abap.string(0);
+  username      : abap.char(12);
+  program       : abap.char(40);
+  details       : abap.string(0);  // JSON formatında ek bilgiler
+}
+```
 
-## Proje Mimarisi
+### 2. Sınıfı Oluştur
 
-### Tablolar
+**ZCL_CORELOG** - Ana logger sınıfı (tek sınıf!)
 
-- **ZCORELOG_CONFIG**  
-  Genel log ayarları (log_level, async_logging vb.).  
-- **ZCORELOG_TARGET**  
-  Hedef tanımları (DB, API, FILE vb.) ve ilgili alanlar.  
-- **ZCORELOG_MODULE**  
-  Belirli modüller (ABAP program/paket) için özel log seviyesi konfigürasyonu.  
-- **ZCORELOG_LOG**  
-  Log kayıtlarının (timestamp, log_level, message, data, meta_data) saklandığı tablo.  
-- **ZCORELOG_FORMAT** *(Opsiyonel)*  
-  Birden çok format tipini (JSON, XML vb.) aynı konfigürasyon altında yönetmek için.
+### 3. İlk Konfigürasyonu Ekle
 
-### Arayüzler (Interfaces)
+ZCORELOG_CONFIG tablosuna bir kayıt ekle:
+```
+CLIENT      CONFIG_NAME  LOG_LEVEL  IS_ACTIVE
+100         DEFAULT      INFO       X
+```
 
-1. **ZIF_CORELOG_CONSTANTS**  
-   - Log seviyeleri (DEBUG, INFO, WARNING, ERROR, FATAL) için sabitler.  
-   - `CLASS-METHODS getLevelForString(iv_level_str : string) : i` metodu ile `'DEBUG'` → `10` dönüşümü yapılabilir (sürüm kısıtlarına göre `CLASS-METHODS` arayüzde kullanılabilir veya sabitler bir sınıfa taşınabilir).
-
-2. **ZIF_CORELOG_FORMATTER**  
-   - `format(io_log_entry : zcl_corelog_entry) : xstring` metodunu içerir.  
-   - Log verisini JSON/XML vb. formata dönüştürerek xstring döndürür; GZIP sıkıştırma eklenebilir.
-
-3. **ZIF_CORELOG_TARGET**  
-   - `write(iv_data : xstring)` metodu, formatlanmış log verisini hedefe (DB, API, dosya vb.) yazar.
-
-### Sınıflar
-
-1. **ZCL_CORELOG_ENTRY**  
-   - Tek bir log girdisini (level, message, data, timestamp, metaData vb.) temsil eder.
-
-2. **ZCL_CORELOG_GZIP_FORMATTER** *(ZIF_CORELOG_FORMATTER implementasyonu)*  
-   - Log girdisini JSON’a çevirir ve GZIP ile sıkıştırır.
-
-3. **ZCL_CORELOG_DB_TARGET** *(ZIF_CORELOG_TARGET implementasyonu)*  
-   - Log bilgisini ZCORELOG_LOG tablosuna `INSERT` yapar.
-
-4. **ZCL_CORELOG_API_TARGET / ZCL_CORELOG_FTP_TARGET / ZCL_CORELOG_FILE_TARGET** *(opsiyonel)*  
-   - DB dışında API, FTP veya dosya sistemine log göndermeye yarayan sınıflar.
-
-5. **ZCL_CORELOG (Ana Logger)**  
-   - Statik metotlar (`init`, `log`, `debug`, `info`, `error`, `fatal` vb.) içerir.  
-   - Veritabanı konfigürasyonu okuyarak `_log_level`, `_async_mode`, `_targets` gibi ayarları yönetir.  
-   - Log verilerini `_formatter` ile formatlayıp `_targets` listesindeki tüm hedeflere yazar.
-
----
-
-## Konfigürasyon
-
-### ZCORELOG_CONFIG
-
-| Alan                 | Açıklama                                 |
-|----------------------|------------------------------------------|
-| `client (CLNT)`      | SAP client                               |
-| `config_id (INT4)`   | Konfigürasyon kimliği                    |
-| `active (BOOLEAN)`   | Bu konfigürasyon aktif mi?               |
-| `log_level (CHAR(10))` | `'DEBUG'`, `'INFO'`, `'ERROR'` vb.     |
-| `async_logging (BOOL)` | Asenkron loglama aktif mi?             |
-| ...                  | Diğer alanlar (`log_rotation_size` vb.)  |
-
-> **Öneri**: `log_level` metinsel (`DEBUG`, `INFO` vb.) saklanarak `getLevelForString` ile numeric değere dönüştürülebilir.
-
-### ZCORELOG_TARGET
-
-| Alan                 | Açıklama                                                    |
-|----------------------|-------------------------------------------------------------|
-| `client (CLNT)`      | SAP client                                                 |
-| `target_id (INT4)`   | Hedef kimliği                                              |
-| `config_id (INT4)`   | Bu hedef hangi konfigürasyona ait?                          |
-| `target_type (CHAR(20))`  | 'DB', 'API', 'FTP', 'FILE' vb.                        |
-| `source_table (CHAR(200))`| 'MARA', 'VBAK' vb. tabloya özel hedef isteniyorsa      |
-| `target_active (BOOL)`    | Hedefin aktif/pasif durumu                             |
-| ...                  | `destination`, `target_path`, `target_table` gibi alanlar   |
-
-### ZCORELOG_MODULE
-
-| Alan                    | Açıklama                                        |
-|-------------------------|-------------------------------------------------|
-| `client (CLNT)`         | SAP client                                     |
-| `module_id (INT4)`      | Modül kimliği                                  |
-| `module_name (CHAR(200))`| ABAP program/paket adı (örn. `SAPLZSD`)       |
-| `module_level (CHAR(10))` | `'DEBUG'`, `'INFO'`, `'ERROR'`, vb.          |
-
-### ZCORELOG_LOG
-
-| Alan                | Açıklama                                         |
-|---------------------|--------------------------------------------------|
-| `log_id (INT4)`     | Log kaydı numarası                               |
-| `timestamp (DEC(15))` | YYYYMMDDHHMMSS biçiminde saklanabilir          |
-| `log_level (INT4)`  | Numeric seviye (10=DEBUG, 20=INFO vb.)           |
-| `message (STRING)`  | Metinsel log mesajı                              |
-| `data (RAWSTRING)`  | Formatlanmış/sıkıştırılmış veri                  |
-| `meta_data (STRING)`| Ek bilgiler (JSON, key=value çiftleri vb.)       |
-| ...                 | `username`, `tcode`, `tableName` vb.             |
-
-### ZCORELOG_FORMAT (Opsiyonel)
-
-| Alan                  | Açıklama                                |
-|-----------------------|-----------------------------------------|
-| `client (CLNT)`       | SAP client                              |
-| `config_id (INT4)`    | ZCORELOG_CONFIG ile ilişkili ID          |
-| `format_type (CHAR(20))` | `'JSON'`, `'XML'`, `'PLAIN'`, vb.     |
-
-Bu tabloyu kullanarak “bir konfigürasyona ait çoklu format tiplerini” yönetebilirsiniz.
-
----
-
-## Kullanım
-
-### Basit Örnek
+### 4. Kullanmaya Başla
 
 ```abap
 REPORT zcorelog_demo.
 
-INITIALIZATION.
-  " DB'den config_id=1'i okuyup ayarları uygula
-  zcl_corelog=>init( iv_config_id = 1 ).
+START-OF-SELECTION.
+  zcl_corelog=>info( 'Program başladı' ).
+  zcl_corelog=>error( 'Bir hata oluştu' ).
+```
+
+İşte bu kadar!
+
+---
+
+## Mimari
+
+### Tasarım
+
+```
+┌─────────────────┐
+│  ABAP Program   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐      ┌──────────────────┐
+│  ZCL_CORELOG    │─────▶│ ZCORELOG_CONFIG  │
+│  (Static Class) │      │ (Ayarlar)        │
+└────────┬────────┘      └──────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│ ZCORELOG_LOG    │
+│ (Log Kayıtları) │
+└─────────────────┘
+```
+
+### Bileşenler
+
+**1. ZCORELOG_CONFIG (2 alan)**
+- `config_name`: Konfigürasyon adı
+- `log_level`: Minimum log seviyesi
+
+**2. ZCORELOG_LOG (7 alan)**
+- `log_id`: Benzersiz numara
+- `timestamp`: Zaman damgası
+- `log_level`: Seviye
+- `message`: Mesaj
+- `username`: Kullanıcı
+- `program`: Program adı
+- `details`: JSON ek bilgiler
+
+**3. ZCL_CORELOG (1 sınıf)**
+- Statik metodlar: `debug()`, `info()`, `warning()`, `error()`, `fatal()`
+- Otomatik seviye kontrolü
+- Güvenli hata yönetimi
+
+## Kullanım Örnekleri
+
+### 1. Temel Kullanım
+
+```abap
+REPORT zdemo_logger.
 
 START-OF-SELECTION.
-  zcl_corelog=>info( iv_message = 'Program başladı.' ).
-  " ...
-  zcl_corelog=>error( iv_message = 'Önemli hata oluştu' ).
+  " Sadece çağır - konfigürasyon otomatik okunur
+  zcl_corelog=>info( 'Program başladı' ).
 
-END-OF-SELECTION.
-  zcl_corelog=>flush( ). " Asenkron moddaysa buffer'ı boşalt
+  " Farklı seviyeler
+  zcl_corelog=>debug( 'Değişken değeri: ' && lv_value ).
+  zcl_corelog=>warning( 'Dikkat: Stok azaldı' ).
+  zcl_corelog=>error( 'Kayıt bulunamadı' ).
+```
 
+### 2. Detaylı Bilgi Ekleme
 
-##Senkron / Asenkron
-Senkron: Her zcl_corelog=>log(...) çağrısı anında hedeflere (DB, API vb.) yazar.
-Asenkron: zcl_corelog=>enableAsyncLogging( ) ile aktif edilir. Bu modda loglar _log_buffer’da tutulur ve zcl_corelog=>flush( ) çağrısıyla hedeflere toplu aktarılır.
-zcl_corelog=>init( iv_config_id = 1 ).
-zcl_corelog=>enableAsyncLogging( ).
+```abap
+DATA(lv_details) = |{{ "order_id": "{ lv_order }", "status": "failed" }}|.
 
-zcl_corelog=>debug( iv_message = 'Buffera giren debug log.' ).
-
-" Program sonu
-zcl_corelog=>flush( ).
-
-
-##Tablo Bazlı Özel Hedef
-ZCORELOG_TARGET’ta source_table = 'MARA' ve target_type = 'API' tanımladınız diyelim. zcl_corelog=>log(...) çağrısında:
-zcl_corelog=>debug(
-  iv_message = 'MARA kaydı güncelleniyor.'
-  iv_table   = 'MARA'
+zcl_corelog=>error(
+  iv_message = 'Sipariş işlenemedi'
+  iv_details = lv_details
 ).
-ZCL_CORELOG otomatik olarak _getCustomTarget ile MARA kaydını bulur, API tipinde bir target (örn. ZCL_CORELOG_API_TARGET) yaratır.
+```
 
-Modül Bazlı Log Seviyesi
-ZCORELOG_MODULE tablosunda module_name='SAPLZSD' ve module_level='ERROR' tanımı varsa, SAPLZSD programı çalışırken DEBUG veya INFO log çağrıları devre dışı kalabilir:
-  
+### 3. Try-Catch ile Kullanım
+
+```abap
+TRY.
+    " Riskli işlem
+    CALL FUNCTION 'SOME_FUNCTION'.
+    zcl_corelog=>info( 'İşlem başarılı' ).
+
+  CATCH cx_root INTO DATA(lx_error).
+    zcl_corelog=>error(
+      iv_message = 'Hata: ' && lx_error->get_text( )
+      iv_details = lx_error->if_message~get_longtext( )
+    ).
+ENDTRY.
+```
+
+### 4. Döngülerde Kullanım
+
+```abap
+LOOP AT lt_data INTO DATA(ls_data).
+  zcl_corelog=>debug( |İşleniyor: { ls_data-id }| ).
+
+  " İş mantığı
+  IF ls_data-status = 'ERROR'.
+    zcl_corelog=>warning( |Sorunlu kayıt: { ls_data-id }| ).
+  ENDIF.
+ENDLOOP.
+
+zcl_corelog=>info( |{ lines( lt_data ) } kayıt işlendi| ).
+```
+
+---
+
+## Gelişmiş Özellikler
+
+### Log Seviyesi Nasıl Çalışır?
+
+```
+Konfigürasyon: LOG_LEVEL = 'INFO'
+
+zcl_corelog=>debug(...)    → ❌ Yazılmaz (DEBUG < INFO)
+zcl_corelog=>info(...)     → ✅ Yazılır
+zcl_corelog=>warning(...)  → ✅ Yazılır
+zcl_corelog=>error(...)    → ✅ Yazılır
+zcl_corelog=>fatal(...)    → ✅ Yazılır
+```
+
+**Seviye Hiyerarşisi:**
+```
+DEBUG (1) < INFO (2) < WARNING (3) < ERROR (4) < FATAL (5)
+```
+
+### Performans İpuçları
+
+**1. Production'da INFO kullan**
+```
+LOG_LEVEL = 'INFO'  → DEBUG logları yazılmaz (performans kazancı)
+```
+
+**2. Debug'da DEBUG kullan**
+```
+LOG_LEVEL = 'DEBUG' → Tüm loglar yazılır (detaylı analiz)
+```
+
+**3. Kritik sistemlerde ERROR kullan**
+```
+LOG_LEVEL = 'ERROR' → Sadece hatalar yazılır (minimum overhead)
+```
+
+### Özelleştirme
+
+**Farklı programlar için farklı seviyeler:**
+
+```
+CONFIG_NAME     LOG_LEVEL
+DEFAULT         INFO
+BACKGROUND      DEBUG
+CRITICAL_BATCH  ERROR
+```
+
+ZCL_CORELOG sınıfında:
+```abap
+" Program adına göre config seç
+DATA(lv_config) = COND #(
+  WHEN sy-cprog CS 'BATCH' THEN 'BACKGROUND'
+  WHEN sy-cprog CS 'CRIT'  THEN 'CRITICAL_BATCH'
+  ELSE 'DEFAULT'
+).
+```
+
+---
+
+## SSS (Sık Sorulan Sorular)
+
+**S: Eski karmaşık versiyon nerede?**
+C: Bu basitleştirilmiş versiyon %90 kullanım senaryosunu karşılıyor. İleri özellikler (API/FTP hedefleri, asenkron mod vb.) ihtiyaç halinde eklenebilir.
+
+**S: Performans etkisi var mı?**
+C: Minimal. Log seviyesi kontrolü sayesinde gereksiz INSERT'ler yapılmaz. DEBUG logları production'da devre dışı bırakılabilir.
+
+**S: Hata durumunda ne olur?**
+C: Logger hata verse bile ana program çalışmaya devam eder (silent fail). Bu sayede log hatası program akışını engellemez.
+
+**S: JSON details zorunlu mu?**
+C: Hayır. Basit mesajlar için sadece `iv_message` yeterli. Detaylı bilgi gerekirse JSON eklenebilir.
+
+**S: Eski loglar nasıl silinir?**
+C: Periyodik job ile ZCORELOG_LOG tablosundan eski kayıtlar silinebilir:
+```abap
+DELETE FROM zcorelog_log
+  WHERE timestamp < sy-datum - 90.  " 90 gün öncesi
+```
+
+---
+
+## Basit vs Karmaşık Karşılaştırma
+
+| Özellik | Eski Karmaşık | Yeni Basit |
+|---------|---------------|------------|
+| **Tablo Sayısı** | 5 tablo | 2 tablo |
+| **Sınıf Sayısı** | 5+ sınıf | 1 sınıf |
+| **Interface** | 3 interface | 0 interface |
+| **Kurulum Süresi** | 30+ dakika | 5 dakika |
+| **Kod Satırı** | ~1000+ | ~200 |
+| **Öğrenme Eğrisi** | Dik | Düz |
+| **Bakım** | Zor | Kolay |
+| **Özellikler** | Çok (gereksiz) | Yeterli |
+
+---
+
+## Katkıda Bulunma
+
+Basitliği koruyarak iyileştirme önerileri bekliyoruz!
+
+## Lisans
+
+MIT

@@ -28,4 +28,8 @@ define table zcorelog_log {
   details       : string(0);
   @EndUserText.label : 'Veri Boyutu (KB)'
   data_size_kb  : dec10_2;
+  @EndUserText.label : 'Modül Adı'
+  module_name   : char30;
+  @EndUserText.label : 'Alt Modül'
+  sub_module    : char30;
 }

@@ -1,7 +1,7 @@
 *&---------------------------------------------------------------------*
 *& Class: ZCL_CORELOG
 *& Açıklama: Basit, minimal ABAP logger
-*& Versiyon: 2.1 (TYPE ANY Support + Size Tracking)
+*& Versiyon: 2.2 (Auto Module Detection + Real-time CDS)
 *&---------------------------------------------------------------------*
 
 CLASS zcl_corelog DEFINITION
@@ -113,6 +113,13 @@ CLASS zcl_corelog DEFINITION
       RETURNING
         VALUE(rv_log_id) TYPE numc16.
 
+    CLASS-METHODS extract_module_from_program
+      IMPORTING
+        iv_program          TYPE syrepid
+      EXPORTING
+        ev_module_name      TYPE char30
+        ev_sub_module       TYPE char30.
+
 ENDCLASS.
 
 
@@ -212,6 +219,18 @@ CLASS zcl_corelog IMPLEMENTATION.
         " Veri boyutunu hesapla (KB cinsinden)
         DATA(lv_size_kb) = calculate_size_kb( lv_details ).
 
+        " Modül bilgilerini otomatik çıkar
+        DATA: lv_module_name TYPE char30,
+              lv_sub_module  TYPE char30.
+
+        extract_module_from_program(
+          EXPORTING
+            iv_program     = sy-cprog
+          IMPORTING
+            ev_module_name = lv_module_name
+            ev_sub_module  = lv_sub_module
+        ).
+
         INSERT INTO zcorelog_log VALUES @(
           VALUE #(
             client       = sy-mandt
@@ -224,6 +243,8 @@ CLASS zcl_corelog IMPLEMENTATION.
             tcode        = sy-tcode
             details      = lv_details
             data_size_kb = lv_size_kb
+            module_name  = lv_module_name
+            sub_module   = lv_sub_module
           )
         ).
 
@@ -353,6 +374,95 @@ CLASS zcl_corelog IMPLEMENTATION.
         " Hata durumunda 0
         rv_size_kb = 0.
     ENDTRY.
+  ENDMETHOD.
+
+  METHOD extract_module_from_program.
+    " Program adından otomatik modül ve alt modül çıkarır
+    " Örnekler:
+    "   ZMM_ORDER_PROCESS  → module_name: MM,  sub_module: ORDER
+    "   SAPLZSD_INVOICE    → module_name: SD,  sub_module: INVOICE
+    "   ZFI_PAYMENT_RUN    → module_name: FI,  sub_module: PAYMENT
+    "   Z_CUSTOM_APP       → module_name: CUSTOM, sub_module: APP
+
+    DATA: lv_prog TYPE string,
+          lv_rest TYPE string.
+
+    lv_prog = iv_program.
+
+    " Boş program kontrolü
+    IF lv_prog IS INITIAL.
+      ev_module_name = 'UNKNOWN'.
+      ev_sub_module  = ''.
+      RETURN.
+    ENDIF.
+
+    " SAPL prefix'i varsa kaldır
+    IF lv_prog(4) = 'SAPL'.
+      lv_prog = lv_prog+4.
+    ENDIF.
+
+    " Z veya Y prefix'i varsa kaldır
+    IF lv_prog(1) = 'Z' OR lv_prog(1) = 'Y'.
+      lv_prog = lv_prog+1.
+    ENDIF.
+
+    " Boş kaldıysa
+    IF lv_prog IS INITIAL.
+      ev_module_name = 'UNKNOWN'.
+      ev_sub_module  = ''.
+      RETURN.
+    ENDIF.
+
+    TRY.
+        " İlk _ veya 2-3 karakter module olarak al
+        DATA(lv_underscore_pos) = find( val = lv_prog sub = '_' ).
+
+        IF lv_underscore_pos > 0.
+          " _ bulundu
+          ev_module_name = substring( val = lv_prog len = lv_underscore_pos ).
+          lv_rest = substring( val = lv_prog off = lv_underscore_pos + 1 ).
+
+          " Sub-module: ikinci _'ye kadar veya tamamı
+          DATA(lv_second_underscore) = find( val = lv_rest sub = '_' ).
+          IF lv_second_underscore > 0.
+            ev_sub_module = substring( val = lv_rest len = lv_second_underscore ).
+          ELSE.
+            ev_sub_module = lv_rest.
+          ENDIF.
+
+        ELSEIF strlen( lv_prog ) >= 2.
+          " _ yok, ilk 2 karakter module
+          ev_module_name = substring( val = lv_prog len = 2 ).
+          IF strlen( lv_prog ) > 2.
+            ev_sub_module = substring( val = lv_prog off = 2 ).
+          ELSE.
+            ev_sub_module = ''.
+          ENDIF.
+
+        ELSE.
+          " Çok kısa program adı
+          ev_module_name = lv_prog.
+          ev_sub_module  = ''.
+        ENDIF.
+
+        " Büyük harfe çevir
+        ev_module_name = to_upper( ev_module_name ).
+        ev_sub_module  = to_upper( ev_sub_module ).
+
+        " 30 karakter limiti
+        IF strlen( ev_module_name ) > 30.
+          ev_module_name = substring( val = ev_module_name len = 30 ).
+        ENDIF.
+        IF strlen( ev_sub_module ) > 30.
+          ev_sub_module = substring( val = ev_sub_module len = 30 ).
+        ENDIF.
+
+      CATCH cx_root.
+        " Hata durumunda default değerler
+        ev_module_name = 'PARSE_ERROR'.
+        ev_sub_module  = ''.
+    ENDTRY.
+
   ENDMETHOD.
 
   METHOD generate_log_id.
